@@ -1,0 +1,261 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <string.h>
+
+// Definição das estruturas de dados
+
+#define MAX_PROCESSES 100
+#define MAX_PROGRAM_LENGTH 100
+
+// Estrutura para representar uma instrução de um processo simulado
+typedef struct {
+    char opcode; // Operação: S, A, D, B, E, F, R
+    int value;   // Valor associado (n) - utilizado para instruções como S, A, D, F
+    char filename[256]; // Nome do arquivo - utilizado para instrução R
+} Instruction;
+
+// Estrutura para representar um processo simulado
+typedef struct {
+    int id;
+    int parent_id;
+    int program_counter;
+    int integer_value;
+    int priority;
+    char state; // R - Ready, B - Blocked, E - Ended
+    int start_time;
+    int cpu_time_used;
+    Instruction program[MAX_PROGRAM_LENGTH];
+} SimulatedProcess;
+
+// Estrutura para representar o estado do sistema
+typedef struct {
+    int current_process_id;
+    SimulatedProcess processes[MAX_PROCESSES];
+    int num_processes;
+} SystemState;
+
+// Variáveis globais
+int time_unit = 0; // Tempo atual
+
+// Funções auxiliares
+
+// Função para executar uma instrução de um processo simulado
+void execute_instruction(Instruction instr, SimulatedProcess *process) {
+    switch(instr.opcode) {
+        case 'S':
+            process->integer_value = instr.value;
+            break;
+        case 'A':
+            process->integer_value += instr.value;
+            break;
+        case 'D':
+            process->integer_value -= instr.value;
+            break;
+        case 'B':
+            process->state = 'B';
+            break;
+        case 'E':
+            process->state = 'E';
+            break;
+        case 'F':
+            // Não é necessário implementar aqui, pois a criação de processos ocorrerá no Process Manager
+            break;
+        case 'R':
+            // Não é necessário implementar aqui, pois a substituição de programas ocorrerá no Process Manager
+            break;
+        default:
+            printf("Instrução inválida\n");
+    }
+}
+
+// Função para imprimir o estado atual do sistema
+void print_system_state(SystemState *state) {
+    printf("****************************************************************\n");
+    printf("Estado do sistema:\n");
+    printf("****************************************************************\n");
+    printf("TEMPO ATUAL: %d\n", time_unit);
+    printf("PROCESSO EXECUTANDO:\n");
+    for (int i = 0; i < state->num_processes; i++) {
+        SimulatedProcess *process = &state->processes[i];
+        if (process->id == state->current_process_id) {
+            printf("pid: %d, ppid: %d, valor: %d, estado: %c\n", process->id, process->parent_id, process->integer_value, process->state);
+            break;
+        }
+    }
+    printf("BLOQUEADO:\n");
+    for (int i = 0; i < state->num_processes; i++) {
+        SimulatedProcess *process = &state->processes[i];
+        if (process->state == 'B') {
+            printf("pid: %d, ppid: %d, valor: %d, estado: %c\n", process->id, process->parent_id, process->integer_value, process->state);
+        }
+    }
+    printf("PROCESSOS PRONTOS:\n");
+    for (int i = 0; i < state->num_processes; i++) {
+        SimulatedProcess *process = &state->processes[i];
+        if (process->state == 'R') {
+            printf("pid: %d, ppid: %d, valor: %d, estado: %c\n", process->id, process->parent_id, process->integer_value, process->state);
+        }
+    }
+    printf("****************************************************************\n");
+}
+
+// Função principal para o processo Commander
+void commander_process(int process_manager_pid) {
+    char command;
+    int pipe_fd[2];
+    if (pipe(pipe_fd) == -1) {
+        perror("Erro ao criar o pipe");
+        exit(EXIT_FAILURE);
+    }
+    while (1) {
+        scanf(" %c", &command); // Lê o comando da entrada padrão
+        write(pipe_fd[1], &command, sizeof(char)); // Envia o comando para o processo Manager através do pipe
+        if (command == 'T') {
+            break;
+        }
+        sleep(1); // Aguarda 1 segundo
+    }
+    close(pipe_fd[1]); // Fecha o descritor de escrita do pipe
+}
+
+// Função principal para o processo Process Manager
+void process_manager_process() {
+    // Inicializa o estado do sistema
+    SystemState state;
+    state.current_process_id = 0;
+    state.num_processes = 1;
+    state.processes[0].id = 0;
+    state.processes[0].parent_id = -1; // Não tem pai
+    state.processes[0].program_counter = 0;
+    state.processes[0].integer_value = 0;
+    state.processes[0].priority = 0;
+    state.processes[0].state = 'R'; // Estado inicial é pronto
+    state.processes[0].start_time = 0;
+    state.processes[0].cpu_time_used = 0;
+    
+    char command;
+    int pipe_fd[2];
+    if (pipe(pipe_fd) == -1) {
+        perror("Erro ao criar o pipe");
+        exit(EXIT_FAILURE);
+    }
+    while (1) {
+        read(pipe_fd[0], &command, sizeof(char)); // Lê o comando enviado pelo Commander
+        switch(command) {
+            case 'Q':
+                // Fim de uma unidade de tempo
+                time_unit++;
+                // Atualiza o estado dos processos
+                for (int i = 0; i < state.num_processes; i++) {
+                    SimulatedProcess *process = &state.processes[i];
+                    if (process->state == 'R') {
+                        execute_instruction(process->program[process->program_counter], process);
+                        process->program_counter++;
+                        if (process->program_counter >= MAX_PROGRAM_LENGTH) {
+                            process->state = 'E'; // Se o programa chegou ao fim, o processo é encerrado
+                        }
+                    }
+                }
+                // Realiza o escalonamento
+                // Troca de contexto se necessário
+                // Criação de processos simulados se necessário
+                break;
+            case 'U':
+                // Desbloqueia o primeiro processo simulado que está na fila de bloqueados
+                // Move para a fila de prontos
+                break;
+            case 'P':
+                // Imprime o estado atual do sistema
+                print_system_state(&state);
+                break;
+            case 'T':
+                // Finaliza o simulador
+                close(pipe_fd[0]); // Fecha o descritor de leitura do pipe
+                exit(EXIT_SUCCESS);
+                break;
+            default:
+                printf("Comando inválido\n");
+        }
+    }
+}
+
+
+// Função principal para o processo Reporter
+void reporter_process(SystemState *state) {
+    while (1) {
+        printf("****************************************************************\n");
+        printf("Estado do sistema:\n");
+        printf("****************************************************************\n");
+        printf("TEMPO ATUAL: %d\n", time_unit);
+        printf("PROCESSO EXECUTANDO:\n");
+        for (int i = 0; i < state->num_processes; i++) {
+            SimulatedProcess *process = &state->processes[i];
+            if (process->id == state->current_process_id) {
+                printf("pid: %d, ppid: %d, valor: %d, estado: %c\n", process->id, process->parent_id, process->integer_value, process->state);
+                break;
+            }
+        }
+        printf("BLOQUEADO:\n");
+        for (int i = 0; i < state->num_processes; i++) {
+            SimulatedProcess *process = &state->processes[i];
+            if (process->state == 'B') {
+                printf("pid: %d, ppid: %d, valor: %d, estado: %c\n", process->id, process->parent_id, process->integer_value, process->state);
+            }
+        }
+        printf("PROCESSOS PRONTOS:\n");
+        for (int i = 0; i < state->num_processes; i++) {
+            SimulatedProcess *process = &state->processes[i];
+            if (process->state == 'R') {
+                printf("pid: %d, ppid: %d, valor: %d, estado: %c\n", process->id, process->parent_id, process->integer_value, process->state);
+            }
+        }
+        printf("****************************************************************\n");
+        
+        // Aguarda 1 segundo antes de imprimir o próximo estado
+        sleep(1);
+    }
+}
+
+int main() {
+    // Código principal
+    // Crie os processos Commander, Process Manager e Reporter
+    pid_t commander_pid, manager_pid, reporter_pid;
+    manager_pid = fork();
+    if (manager_pid == -1) {
+        perror("Erro ao criar o processo Process Manager");
+        exit(EXIT_FAILURE);
+    } else if (manager_pid == 0) {
+        // Processo Process Manager
+        process_manager_process();
+    } else {
+        commander_pid = fork();
+        if (commander_pid == -1) {
+            perror("Erro ao criar o processo Commander");
+            exit(EXIT_FAILURE);
+        } else if (commander_pid == 0) {
+            // Processo Commander
+            commander_process(manager_pid);
+        } else {
+            reporter_pid = fork();
+            if (reporter_pid == -1) {
+                perror("Erro ao criar o processo Reporter");
+                exit(EXIT_FAILURE);
+            } else if (reporter_pid == 0) {
+                // Processo Reporter
+                SystemState state; // Estado do sistema
+                // Inicialize o estado do sistema conforme necessário
+                reporter_process(&state);
+            } else {
+                // Processo pai
+                // Aguarda a finalização dos processos filho
+                waitpid(commander_pid, NULL, 0);
+                waitpid(manager_pid, NULL, 0);
+                waitpid(reporter_pid, NULL, 0);
+            }
+        }
+    }
+
+    return 0;
+}
